@@ -46,28 +46,6 @@ pub fn help(app: &mut App, topic: Option<&str>) -> CommandResult {
 
 /// Clear conversation history
 pub fn clear(app: &mut App) -> CommandResult {
-    let todos_cleared = reset_conversation_state(app);
-    app.current_session_id = None;
-    let locale = app.ui_locale;
-    let message = if todos_cleared {
-        tr(locale, MessageId::ClearConversation).to_string()
-    } else {
-        tr(locale, MessageId::ClearConversationBusy).to_string()
-    };
-    CommandResult::with_message_and_action(
-        message,
-        AppAction::SyncSession {
-            session_id: None,
-            messages: Vec::new(),
-            system_prompt: None,
-            model: app.model.clone(),
-            workspace: app.workspace.clone(),
-        },
-    )
-}
-
-/// Reset the active conversation without choosing the next session id.
-pub(crate) fn reset_conversation_state(app: &mut App) -> bool {
     app.clear_history();
     app.mark_history_updated();
     app.api_messages.clear();
@@ -77,7 +55,10 @@ pub(crate) fn reset_conversation_state(app: &mut App) -> bool {
     app.queued_draft = None;
     app.session.total_tokens = 0;
     app.session.total_conversation_tokens = 0;
-    app.session.reset_token_breakdown();
+    app.session.total_input_tokens = 0;
+    app.session.total_cache_hit_tokens = 0;
+    app.session.total_cache_miss_tokens = 0;
+    app.session.total_output_tokens = 0;
     app.session.session_cost = 0.0;
     app.session.session_cost_cny = 0.0;
     app.session.subagent_cost = 0.0;
@@ -100,7 +81,23 @@ pub(crate) fn reset_conversation_state(app: &mut App) -> bool {
     app.session.last_reasoning_replay_tokens = None;
     app.session.turn_cache_history.clear();
     app.session.last_cache_inspection = None;
-    todos_cleared
+    app.current_session_id = None;
+    let locale = app.ui_locale;
+    let message = if todos_cleared {
+        tr(locale, MessageId::ClearConversation).to_string()
+    } else {
+        tr(locale, MessageId::ClearConversationBusy).to_string()
+    };
+    CommandResult::with_message_and_action(
+        message,
+        AppAction::SyncSession {
+            session_id: None,
+            messages: Vec::new(),
+            system_prompt: None,
+            model: app.model.clone(),
+            workspace: app.workspace.clone(),
+        },
+    )
 }
 
 /// Exit the application
