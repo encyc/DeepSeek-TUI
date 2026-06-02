@@ -195,16 +195,15 @@ impl std::fmt::Display for PrefixDrift {
 
 // ── AppendLog ──────────────────────────────────────────────────────────
 
-/// Append-only conversation history. Only exposes `push`-style mutations.
+/// Append-only conversation history. Derefs to [`Vec<Message>`] for
+/// transparent read access; mutations go through `push()` / `From`.
 ///
-/// **Phase 1 scaffolding** — not yet wired into the engine request path.
-#[allow(dead_code)]
+/// Phase 4: backing store for `Session.messages` (#2264).
 #[derive(Debug, Clone)]
 pub struct AppendLog {
     messages: Vec<Message>,
 }
 
-#[allow(dead_code)]
 impl AppendLog {
     pub fn new() -> Self {
         Self {
@@ -216,33 +215,47 @@ impl AppendLog {
         Self { messages }
     }
 
+    /// Append a message to the log.
     pub fn push(&mut self, message: Message) {
         self.messages.push(message);
     }
 
+    /// Consume and return the inner `Vec<Message>`.
     #[must_use]
-    pub fn len(&self) -> usize {
-        self.messages.len()
-    }
-
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.messages.is_empty()
-    }
-
-    pub fn iter(&self) -> impl Iterator<Item = &Message> {
-        self.messages.iter()
-    }
-
-    #[must_use]
-    pub fn as_slice(&self) -> &[Message] {
-        &self.messages
+    pub fn into_inner(self) -> Vec<Message> {
+        self.messages
     }
 }
 
 impl Default for AppendLog {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl From<Vec<Message>> for AppendLog {
+    fn from(messages: Vec<Message>) -> Self {
+        Self { messages }
+    }
+}
+
+impl From<AppendLog> for Vec<Message> {
+    fn from(log: AppendLog) -> Self {
+        log.messages
+    }
+}
+
+impl std::ops::Deref for AppendLog {
+    type Target = Vec<Message>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.messages
+    }
+}
+
+impl std::ops::DerefMut for AppendLog {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.messages
     }
 }
 
@@ -525,7 +538,6 @@ mod tests {
         let msgs = vec![make_message("user", "a"), make_message("assistant", "b")];
         let log = AppendLog::from_messages(msgs);
         assert_eq!(log.len(), 2);
-        assert_eq!(log.as_slice().len(), 2);
     }
 
     // ── TurnScratch ───────────────────────────────────────────────

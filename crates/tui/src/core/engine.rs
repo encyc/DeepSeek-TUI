@@ -1091,7 +1091,7 @@ impl Engine {
                     } else if messages.is_empty() && system_prompt.is_none() {
                         self.session.id = uuid::Uuid::new_v4().to_string();
                     }
-                    self.session.messages = messages;
+                    self.session.messages = messages.into();
                     self.session.compaction_summary_prompt =
                         extract_compaction_summary_prompt(system_prompt.clone());
                     self.session.system_prompt = system_prompt;
@@ -1182,7 +1182,7 @@ impl Engine {
             .tx_event
             .send(Event::SessionUpdated {
                 session_id: self.session.id.clone(),
-                messages: self.session.messages.clone(),
+                messages: self.session.messages.clone().into(),
                 system_prompt: self.session.system_prompt.clone(),
                 model: self.session.model.clone(),
                 workspace: self.session.workspace.clone(),
@@ -1673,7 +1673,7 @@ impl Engine {
             Ok(result) => {
                 if !result.messages.is_empty() || self.session.messages.is_empty() {
                     let messages_after = result.messages.len();
-                    self.session.messages = result.messages;
+                    self.session.messages = result.messages.into();
                     self.merge_compaction_summary(result.summary_prompt);
                     self.emit_session_updated().await;
                     let removed = messages_before.saturating_sub(messages_after);
@@ -1769,7 +1769,7 @@ impl Engine {
         {
             Ok(result) => {
                 let messages_after = result.messages.len();
-                self.session.messages = result.messages;
+                self.session.messages = result.messages.into();
                 self.emit_session_updated().await;
 
                 let summary = format!(
@@ -1864,7 +1864,7 @@ impl Engine {
         {
             Ok(result) => {
                 retries_used = result.retries_used;
-                compacted_messages = result.messages;
+                compacted_messages = result.messages.into();
                 summary_prompt = result.summary_prompt;
             }
             Err(err) => {
@@ -1952,7 +1952,7 @@ impl Engine {
             self.session.model.clone(),
             self.session.workspace.clone(),
             self.session.system_prompt.clone(),
-            self.session.messages.clone(),
+            self.session.messages.clone().into(),
         ))
         .with_cancel_token(self.cancel_token.clone())
         .with_trusted_external_paths(trusted_external_paths);
@@ -2310,7 +2310,7 @@ impl Engine {
         );
 
         // 5. Atomic swap.
-        self.session.messages = seed_messages;
+        self.session.messages = seed_messages.into();
         self.session.cycle_count = to;
         self.session.current_cycle_started = now;
         self.session.cycle_briefings.push(briefing.clone());

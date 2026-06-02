@@ -2104,7 +2104,7 @@ fn messages_with_turn_metadata_preserves_stored_messages_for_prefix_cache() {
     let first_user = engine.user_text_message_with_turn_metadata("inspect src/lib.rs".to_string());
     engine.session.add_message(first_user.clone());
     let first_request = engine.messages_with_turn_metadata();
-    assert_eq!(first_request, engine.session.messages);
+    assert_eq!(&first_request, &*engine.session.messages);
 
     engine.session.add_message(Message {
         role: "assistant".to_string(),
@@ -2121,7 +2121,7 @@ fn messages_with_turn_metadata_preserves_stored_messages_for_prefix_cache() {
     engine.session.add_message(second_user);
 
     let second_request = engine.messages_with_turn_metadata();
-    assert_eq!(second_request, engine.session.messages);
+    assert_eq!(&second_request, &*engine.session.messages);
     assert_eq!(second_request.first(), Some(&first_user));
 }
 
