@@ -195,8 +195,10 @@ impl std::fmt::Display for PrefixDrift {
 
 // ── AppendLog ──────────────────────────────────────────────────────────
 
-/// Append-only conversation history. Derefs to [`Vec<Message>`] for
-/// transparent read access; mutations go through `push()` / `From`.
+/// Append-only conversation history. Derefs to `&[Message]` via
+/// [`Deref`](std::ops::Deref) for transparent read access; mutations go
+/// through explicit methods (`push`, `truncate_to`, `trim_front`, `clear`)
+/// whose names make cache impact obvious.
 ///
 /// Phase 4: backing store for `Session.messages` (#2264).
 #[derive(Debug, Clone)]
@@ -215,9 +217,47 @@ impl AppendLog {
         Self { messages }
     }
 
-    /// Append a message to the log.
+    /// Append a message to the log. A single-message push is the cheapest
+    /// mutation for prefix-cache stability — it extends the byte sequence
+    /// without disturbing earlier turns.
     pub fn push(&mut self, message: Message) {
         self.messages.push(message);
+    }
+
+    /// Append multiple messages in one operation (fewer cache-line
+    /// invalidations than repeated `push`).
+    pub fn push_batch(&mut self, batch: Vec<Message>) {
+        self.messages.extend(batch);
+    }
+
+    /// Truncate to keep only the most recent `new_len` messages.
+    /// Discards older messages (and their prefix-cache contribution)
+    /// from the front.
+    pub fn truncate_to(&mut self, new_len: usize) {
+        self.messages.truncate(new_len);
+    }
+
+    /// Remove `count` messages from the front (oldest first).
+    /// Cache-destroying: drops the prefix that earlier turns share.
+    pub fn trim_front(&mut self, count: usize) {
+        if count >= self.messages.len() {
+            self.messages.clear();
+        } else {
+            self.messages.drain(0..count);
+        }
+    }
+
+    /// Remove all messages. Resets cache state completely.
+    pub fn clear(&mut self) {
+        self.messages.clear();
+    }
+
+    /// Return a mutable reference to the last message, if any.
+    /// Prefer this over `last_mut()` on the inner vec — the name signals
+    /// that only the most recent turn's content is being modified.
+    #[must_use]
+    pub fn last_mut(&mut self) -> Option<&mut Message> {
+        self.messages.last_mut()
     }
 
     /// Consume and return the inner `Vec<Message>`.
@@ -250,12 +290,6 @@ impl std::ops::Deref for AppendLog {
 
     fn deref(&self) -> &Self::Target {
         &self.messages
-    }
-}
-
-impl std::ops::DerefMut for AppendLog {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.messages
     }
 }
 

@@ -1236,7 +1236,7 @@ impl Engine {
                     } else if messages.is_empty() && system_prompt.is_none() {
                         self.session.id = uuid::Uuid::new_v4().to_string();
                     }
-                    self.session.messages = messages;
+                    self.session.messages = messages.into();
                     self.session.compaction_summary_prompt =
                         extract_compaction_summary_prompt(system_prompt.clone());
                     self.session.system_prompt = system_prompt;
@@ -1281,7 +1281,7 @@ impl Engine {
                         }
                     }
                     if let Some(idx) = cut {
-                        self.session.messages.truncate(idx);
+                        self.session.messages.truncate_to(idx);
                     }
                     // Now dispatch the new message as a normal send,
                     // reusing the engine's stored mode/model config.
@@ -1327,7 +1327,7 @@ impl Engine {
             .tx_event
             .send(Event::SessionUpdated {
                 session_id: self.session.id.clone(),
-                messages: self.session.messages.clone(),
+                messages: self.session.messages.clone().into(),
                 system_prompt: self.session.system_prompt.clone(),
                 model: self.session.model.clone(),
                 workspace: self.session.workspace.clone(),
@@ -1878,7 +1878,7 @@ In {new} mode: {policy}\n\n\
             Ok(result) => {
                 if !result.messages.is_empty() || self.session.messages.is_empty() {
                     let messages_after = result.messages.len();
-                    self.session.messages = result.messages;
+                    self.session.messages = result.messages.into();
                     self.merge_compaction_summary(result.summary_prompt);
                     self.emit_session_updated().await;
                     let removed = messages_before.saturating_sub(messages_after);
@@ -1974,7 +1974,7 @@ In {new} mode: {policy}\n\n\
         {
             Ok(result) => {
                 let messages_after = result.messages.len();
-                self.session.messages = result.messages;
+                self.session.messages = result.messages.into();
                 self.emit_session_updated().await;
 
                 let summary = format!(
@@ -2023,7 +2023,7 @@ In {new} mode: {policy}\n\n\
         while self.session.messages.len() > MIN_RECENT_MESSAGES_TO_KEEP
             && self.estimated_input_tokens() > target_input_budget
         {
-            self.session.messages.remove(0);
+            self.session.messages.trim_front(1);
             removed = removed.saturating_add(1);
         }
         removed
@@ -2044,7 +2044,7 @@ In {new} mode: {policy}\n\n\
 
         let mut retries_used = 0u32;
         let mut summary_prompt = None;
-        let mut compacted_messages = self.session.messages.clone();
+        let mut compacted_messages: Vec<Message> = self.session.messages.clone().into();
 
         let mut forced_config = self.config.compaction.clone();
         forced_config.enabled = true;
@@ -2079,7 +2079,7 @@ In {new} mode: {policy}\n\n\
         }
 
         if !compacted_messages.is_empty() || self.session.messages.is_empty() {
-            self.session.messages = compacted_messages;
+            self.session.messages = compacted_messages.into();
         }
         self.merge_compaction_summary(summary_prompt);
 
@@ -2153,7 +2153,7 @@ In {new} mode: {policy}\n\n\
             self.session.model.clone(),
             self.session.workspace.clone(),
             self.session.system_prompt.clone(),
-            self.session.messages.clone(),
+            self.session.messages.clone().into(),
         ))
         .with_cancel_token(self.cancel_token.clone())
         .with_trusted_external_paths(trusted_external_paths);
