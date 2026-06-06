@@ -1,4 +1,4 @@
-//! CLI entry point for the `DeepSeek` client.
+//! CLI entry point for CodeWhale.
 
 use std::io::{self, IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
@@ -30,7 +30,6 @@ mod config;
 mod config_ui;
 mod core;
 mod cost_status;
-mod cycle_manager;
 mod deepseek_theme;
 mod dependencies;
 mod error_taxonomy;
@@ -116,8 +115,8 @@ fn configure_windows_console_utf8() {}
     bin_name = "codewhale-tui",
     author,
     version = env!("DEEPSEEK_BUILD_VERSION"),
-    about = "codewhale/CLI for DeepSeek models",
-    long_about = "Terminal-native TUI and CLI for DeepSeek models.\n\nRun 'codewhale' to start.\n\nNot affiliated with DeepSeek Inc."
+    about = "CodeWhale terminal coding agent",
+    long_about = "Terminal-native TUI and CLI for open-source and open-weight coding models.\n\nRun 'codewhale' to start.\n\nProvider routes include DeepSeek, Arcee, Hugging Face, OpenRouter, Xiaomi MiMo, local vLLM/SGLang/Ollama, and more."
 )]
 struct Cli {
     /// Subcommand to run
@@ -215,7 +214,7 @@ enum Commands {
     },
     /// Create default AGENTS.md in current directory
     Init,
-    /// Save a DeepSeek API key to the shared user config
+    /// Save an API key to the shared user config
     Login {
         /// API key to store (otherwise read from stdin)
         #[arg(long)]
@@ -1117,7 +1116,7 @@ async fn main() -> Result<()> {
     };
 
     // Default: Interactive TUI
-    // --yolo starts in YOLO mode (shell + trust + auto-approve)
+    // --yolo starts in YOLO mode (auto-approve; shell if allow_shell=true)
     run_interactive(&cli, &config, resume_session_id, None).await
 }
 
@@ -2001,9 +2000,14 @@ fn run_setup_status(config: &Config, workspace: &Path) -> Result<()> {
                     "FIREWORKS_API_KEY",
                     "codewhale auth set --provider fireworks --api-key \"...\"",
                 ),
-                crate::config::ApiProvider::Siliconflow => (
+                crate::config::ApiProvider::Siliconflow
+                | crate::config::ApiProvider::SiliconflowCn => (
                     "SILICONFLOW_API_KEY",
                     "codewhale auth set --provider siliconflow --api-key \"...\"",
+                ),
+                crate::config::ApiProvider::Arcee => (
+                    "ARCEE_API_KEY",
+                    "codewhale auth set --provider arcee --api-key \"...\"",
                 ),
                 crate::config::ApiProvider::Moonshot => (
                     "MOONSHOT_API_KEY/KIMI_API_KEY",
@@ -2024,6 +2028,10 @@ fn run_setup_status(config: &Config, workspace: &Path) -> Result<()> {
                     "VOLCENGINE_API_KEY",
                     "codewhale auth set --provider volcengine",
                 ),
+                crate::config::ApiProvider::Huggingface => (
+                    "HUGGINGFACE_API_KEY/HF_TOKEN",
+                    "codewhale auth set --provider huggingface",
+                ),
                 crate::config::ApiProvider::Deepseek | crate::config::ApiProvider::DeepseekCN => {
                     ("DEEPSEEK_API_KEY", "codewhale auth set --provider deepseek")
                 }
@@ -2041,11 +2049,14 @@ fn run_setup_status(config: &Config, workspace: &Path) -> Result<()> {
                     crate::config::ApiProvider::XiaomiMimo => "xiaomi_mimo",
                     crate::config::ApiProvider::Novita => "novita",
                     crate::config::ApiProvider::Fireworks => "fireworks",
-                    crate::config::ApiProvider::Siliconflow => "siliconflow",
+                    crate::config::ApiProvider::Siliconflow
+                    | crate::config::ApiProvider::SiliconflowCn => "siliconflow",
+                    crate::config::ApiProvider::Arcee => "arcee",
                     crate::config::ApiProvider::Moonshot => "moonshot",
                     crate::config::ApiProvider::Sglang => "sglang",
                     crate::config::ApiProvider::Vllm => "vllm",
                     crate::config::ApiProvider::Ollama => "ollama",
+                    crate::config::ApiProvider::Huggingface => "huggingface",
                     crate::config::ApiProvider::Deepseek
                     | crate::config::ApiProvider::DeepseekCN => "deepseek",
                 }
@@ -5632,7 +5643,9 @@ async fn run_exec_agent(
     use crate::core::engine::{EngineConfig, spawn_engine};
     use crate::core::events::Event;
     use crate::core::ops::Op;
-    use crate::models::compaction_threshold_for_model;
+    use crate::models::{
+        auto_compact_default_for_model, compaction_threshold_for_model_at_percent,
+    };
     use crate::tools::plan::new_shared_plan_state;
     use crate::tools::todo::new_shared_todo_list;
     use crate::tui::app::AppMode;
@@ -5644,15 +5657,19 @@ async fn run_exec_agent(
         .reasoning_effort
         .map(|effort| effort.as_setting().to_string());
 
-    // Compaction defaults to disabled in v0.6.6: the checkpoint-restart cycle
-    // architecture (issue #124) handles long-context resets via fresh contexts
-    // rather than progressive summarization. The compaction config is still
-    // wired through so users who explicitly opt back in through TUI settings
-    // or direct engine config keep their old behavior.
+    let settings = crate::settings::Settings::load().unwrap_or_default();
+    let auto_compact_enabled = if crate::settings::Settings::auto_compact_explicitly_configured() {
+        settings.auto_compact
+    } else {
+        auto_compact_default_for_model(&effective_model)
+    };
     let compaction = CompactionConfig {
-        enabled: false,
+        enabled: auto_compact_enabled,
         model: effective_model.clone(),
-        token_threshold: compaction_threshold_for_model(&effective_model),
+        token_threshold: compaction_threshold_for_model_at_percent(
+            &effective_model,
+            settings.auto_compact_threshold_percent,
+        ),
         ..Default::default()
     };
 
@@ -5664,8 +5681,6 @@ async fn run_exec_agent(
         .lsp
         .clone()
         .map(crate::config::LspConfigToml::into_runtime);
-    let settings = crate::settings::Settings::load().unwrap_or_default();
-
     let engine_config = EngineConfig {
         model: effective_model.clone(),
         workspace: workspace.clone(),
@@ -5686,7 +5701,6 @@ async fn run_exec_agent(
         max_subagents,
         features: config.features(),
         compaction,
-        cycle: crate::cycle_manager::CycleConfig::default(),
         capacity: crate::core::capacity::CapacityControllerConfig::from_app_config(config),
         todos: new_shared_todo_list(),
         plan_state: new_shared_plan_state(),
@@ -5702,6 +5716,9 @@ async fn run_exec_agent(
         runtime_services: crate::tools::spec::RuntimeToolServices::default(),
         subagent_model_overrides: config.subagent_model_overrides(),
         subagent_api_timeout: std::time::Duration::from_secs(config.subagent_api_timeout_secs()),
+        subagent_heartbeat_timeout: std::time::Duration::from_secs(
+            config.subagent_heartbeat_timeout_secs(),
+        ),
         prefer_bwrap: config.prefer_bwrap.unwrap_or(false),
         memory_enabled: config.memory_enabled(),
         memory_path: config.memory_path(),

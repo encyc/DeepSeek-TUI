@@ -104,18 +104,19 @@ for authority in a single turn. LLM-as-a-judge needs jurisdiction — which
 source wins when they disagree?
 
 CodeWhale answers this with a **Constitution** (`prompts/base.md`). It's a
-formal hierarchy of law — Article VII ranks nine sources from the
+formal hierarchy of law — Article VII ranks nine tiers from the
 Constitution's own articles down to prior-session handoffs. The user's
 current message outranks stale project instructions. Live tool output
 outranks assumptions. Verification outranks confidence. The model inherits
 a clear chain of authority every turn and never has to guess which
 directive to follow.
 
-Seven articles sit above the hierarchy, defining the model's identity,
-duties, and agency: a verification mandate (Article V — every action leaves
-evidence, never declare success on faith), a coordination legacy (Article
-VI — leave the workspace legible for the next intelligence), and a
-primacy-of-truth clause (Article II — no lower rule may override it).
+Six Articles define the model's identity, duties, and agency (Article VII
+is the hierarchy itself): a verification mandate (Article V — every action
+leaves evidence, never declare success on faith), a coordination legacy
+(Article VI — leave the workspace cleaner and the handoff truthful for the
+next intelligence), and a primacy-of-truth clause (Article II —
+non-negotiable; not even a user request may override the duty of truth).
 
 DeepSeek V4's prefix caching makes this practical. The Constitution is long
 and detailed, but once cached it costs roughly 100× less per turn than a
@@ -300,6 +301,21 @@ Both binaries are required. Cross-compilation and platform-specific notes: [docs
 For the full shipped provider registry, including model IDs, auth variables,
 base URLs, and capability boundaries, see [docs/PROVIDERS.md](docs/PROVIDERS.md).
 
+Think of provider and model as separate choices: `provider` is the route,
+account, and endpoint; `model` is the model ID on that route. DeepSeek-family
+models can be reached through several routes, so `/config` exposes both
+`provider` and `provider_url`.
+
+| Route | Typical DeepSeek model ID |
+|-------|---------------------------|
+| `deepseek` | `deepseek-v4-pro` |
+| `nvidia-nim` | `deepseek-ai/deepseek-v4-pro` |
+| `openrouter` | `deepseek/deepseek-v4-pro` |
+| `fireworks` | `accounts/fireworks/models/deepseek-v4-pro` |
+| `siliconflow` | `deepseek-ai/DeepSeek-V4-Pro` |
+| `openai` | Your gateway's model ID |
+| `huggingface` | `deepseek-ai/DeepSeek-V4-Pro` |
+
 ```bash
 # NVIDIA NIM
 codewhale auth set --provider nvidia-nim --api-key "YOUR_NVIDIA_API_KEY"
@@ -320,9 +336,48 @@ codewhale --provider openrouter --model deepseek/deepseek-v4-pro
 codewhale --provider openrouter --model arcee-ai/trinity-large-thinking
 codewhale --provider openrouter --model minimax/minimax-m3
 
+Arcee AI offers direct API access to its powerful Trinity models, including the reasoning-capable Trinity-Large Thinking. This section provides comprehensive setup instructions and model comparisons.
+
+## Configuration
+
+### API Key
+The primary authentication method is the `ARCEE_API_KEY` environment variable or the `[providers.arcee]` configuration section in `~/.codewhale/config.toml`:
+
+```toml
+[providers.arcee]
+# api_key = "your-arcee-api-key"
+# base_url = "https://api.arcee.ai/api/v1"
+# model = "trinity-large-thinking"  # or "trinity-large-preview", "trinity-mini"
+```
+
+### Environment Variables
+
+- `ARCEE_API_KEY`: Your Arcee API key (required)
+- `ARCEE_BASE_URL`: Custom base URL (optional, defaults to `https://api.arcee.ai/api/v1`)
+- `ARCEE_MODEL`: Default model to use (optional, defaults to `trinity-large-thinking`)
+
+### Model Support
+
+CodeWhale supports three Arcee models:
+
+| Model | Reasoning | Context Window | Max Output | Best For |
+|--------|-----------|----------------|------------|----------|
+| `trinity-large-thinking` | ✅ Yes | 262,144 tokens | 262,144 tokens | Complex reasoning, coding, math |
+| `trinity-large-preview` | ❌ No | 262,144 tokens | 4,096 tokens | High-accuracy non-reasoning tasks |
+| `trinity-mini` | ❌ No | 128,000 tokens | 4,096 tokens | Faster, cost-effective tasks |
+
+**Note:** The `trinity-large-thinking` model supports reasoning (thinking mode) and can handle very large contexts, making it ideal for complex programming tasks. The other models do not support reasoning but offer larger context windows than many other providers.
+codewhale auth set --provider arcee --api-key "YOUR_ARCEE_API_KEY"
+codewhale --provider arcee --model trinity-large-thinking
+codewhale --provider arcee --model trinity-large-preview
+
 # Xiaomi MiMo
 codewhale auth set --provider xiaomi-mimo --api-key "YOUR_XIAOMI_KEY"
+# Token Plan (`tp-...`) keys default to https://token-plan-sgp.xiaomimimo.com/v1.
+# To force a provider endpoint: /config provider_url token-plan --save
+# or /config provider_url pay-as-you-go --save.
 codewhale --provider xiaomi-mimo --model mimo-v2.5-pro
+codewhale --provider xiaomi-mimo --model mimo-v2.5
 codewhale --provider xiaomi-mimo speech "Hello from MiMo" --model tts -o hello.wav
 
 # Novita
@@ -524,25 +579,28 @@ Key environment variables:
 | `DEEPSEEK_HTTP_HEADERS` | Optional custom model request headers, e.g. `X-Model-Provider-Id=your-model-provider` |
 | `DEEPSEEK_MODEL` | Default model |
 | `DEEPSEEK_STREAM_IDLE_TIMEOUT_SECS` | Stream idle timeout in seconds, default `300`, clamped to `1..=3600` |
-| `CODEWHALE_PROVIDER` / `DEEPSEEK_PROVIDER` | `deepseek` (default), `nvidia-nim`, `openai`, `atlascloud`, `wanjie-ark`, `volcengine`, `openrouter`, `xiaomi-mimo`, `novita`, `fireworks`, `siliconflow`, `moonshot`, `sglang`, `vllm`, `ollama` |
+| `CODEWHALE_PROVIDER` / `DEEPSEEK_PROVIDER` | `deepseek` (default), `nvidia-nim`, `openai`, `atlascloud`, `wanjie-ark`, `volcengine`, `openrouter`, `xiaomi-mimo`, `novita`, `fireworks`, `siliconflow`, `siliconflow-CN`, `arcee`, `moonshot`, `sglang`, `vllm`, `ollama`, `huggingface` |
 | `DEEPSEEK_PROFILE` | Config profile name |
 | `DEEPSEEK_MEMORY` | Set to `on` to enable user memory |
 | `DEEPSEEK_ALLOW_INSECURE_HTTP=1` | Allow non-local `http://` API base URLs on trusted networks |
-| `NVIDIA_API_KEY` / `OPENAI_API_KEY` / `ATLASCLOUD_API_KEY` / `WANJIE_ARK_API_KEY` / `VOLCENGINE_API_KEY` / `OPENROUTER_API_KEY` / `XIAOMI_MIMO_API_KEY` / `XIAOMI_API_KEY` / `MIMO_API_KEY` / `NOVITA_API_KEY` / `FIREWORKS_API_KEY` / `SILICONFLOW_API_KEY` / `MOONSHOT_API_KEY` / `KIMI_API_KEY` / `SGLANG_API_KEY` / `VLLM_API_KEY` / `OLLAMA_API_KEY` | Provider auth |
+| `NVIDIA_API_KEY` / `OPENAI_API_KEY` / `ATLASCLOUD_API_KEY` / `WANJIE_ARK_API_KEY` / `VOLCENGINE_API_KEY` / `VOLCENGINE_ARK_API_KEY` / `ARK_API_KEY` / `OPENROUTER_API_KEY` / `XIAOMI_MIMO_API_KEY` / `XIAOMI_API_KEY` / `MIMO_API_KEY` / `NOVITA_API_KEY` / `FIREWORKS_API_KEY` / `SILICONFLOW_API_KEY` / `ARCEE_API_KEY` / `MOONSHOT_API_KEY` / `KIMI_API_KEY` / `SGLANG_API_KEY` / `VLLM_API_KEY` / `OLLAMA_API_KEY` / `HUGGINGFACE_API_KEY` / `HF_TOKEN` | Provider auth |
 | `OPENAI_BASE_URL` / `OPENAI_MODEL` | Generic OpenAI-compatible endpoint and model ID |
 | `ATLASCLOUD_BASE_URL` / `ATLASCLOUD_MODEL` | AtlasCloud endpoint and model override |
 | `WANJIE_ARK_BASE_URL` / `WANJIE_ARK_MODEL` | Wanjie Ark endpoint and model override |
+| `VOLCENGINE_BASE_URL` / `VOLCENGINE_ARK_BASE_URL` / `ARK_BASE_URL` / `VOLCENGINE_MODEL` / `VOLCENGINE_ARK_MODEL` | Volcengine Ark endpoint and model override |
 | `OPENROUTER_BASE_URL` | OpenRouter endpoint override |
-| `XIAOMI_MIMO_BASE_URL` / `MIMO_BASE_URL` / `XIAOMI_MIMO_MODEL` / `MIMO_MODEL` | Xiaomi MiMo endpoint and model override |
+| `XIAOMI_MIMO_BASE_URL` / `MIMO_BASE_URL` / `XIAOMI_MIMO_MODEL` / `MIMO_MODEL` | Xiaomi MiMo endpoint and model override; Token Plan default is `https://token-plan-sgp.xiaomimimo.com/v1` |
 | `NOVITA_BASE_URL` | Novita endpoint override |
 | `FIREWORKS_BASE_URL` | Fireworks endpoint override |
 | `SILICONFLOW_BASE_URL` / `SILICONFLOW_MODEL` | SiliconFlow endpoint and model override |
+| `ARCEE_BASE_URL` / `ARCEE_MODEL` | Arcee AI endpoint and model override |
 | `SGLANG_BASE_URL` | Self-hosted SGLang endpoint |
 | `SGLANG_MODEL` | Self-hosted SGLang model ID |
 | `VLLM_BASE_URL` | Self-hosted vLLM endpoint |
 | `VLLM_MODEL` | Self-hosted vLLM model ID |
 | `OLLAMA_BASE_URL` | Self-hosted Ollama endpoint |
 | `OLLAMA_MODEL` | Self-hosted Ollama model tag |
+| `HUGGINGFACE_API_KEY` / `HF_TOKEN` / `HUGGINGFACE_BASE_URL` / `HUGGINGFACE_MODEL` | Hugging Face endpoint and model override |
 | `NO_ANIMATIONS=1` | Force accessibility mode at startup |
 | `SSL_CERT_FILE` | Custom CA bundle for corporate proxies |
 
@@ -724,6 +782,8 @@ This project ships with help from a growing community of contributors:
 - **[cyq1017](https://github.com/cyq1017)** — runtime event envelope, render-diff debug logging, and deterministic composer history flushing (#2252, #2332, #2375)
 - **[hongqitai](https://github.com/hongqitai)** — state schema parent-entry support and clippy/fmt cleanup (#2308, #2432)
 - **[BryonGo](https://github.com/BryonGo)** — effective-model compaction budgeting fix (#2437)
+- **[xyuai](https://github.com/xyuai)** — provider persistence to config, /logout scope clarification, provider picker key replacement shortcut, MiMo auth state cleanup (#2714, #2715, #2717, #2718)
+- **[RefuseOdd](https://github.com/RefuseOdd)** — configurable `path_suffix` for OpenAI-compatible endpoints (#2558)
 
 Reports, repros, and verification that shaped v0.8.48 also deserve visible
 credit: **[@buko](https://github.com/buko)**, **[@yyyCode](https://github.com/yyyCode)**,

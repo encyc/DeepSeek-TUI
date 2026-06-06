@@ -470,8 +470,9 @@ fn core_native_tools_stay_loaded_in_yolo_mode() {
         AppMode::Yolo,
         &always_load
     ));
+    // git_blame remains deferred (read-only git history beyond log/show/diff).
     assert!(should_default_defer_tool(
-        "git_show",
+        "git_blame",
         AppMode::Yolo,
         &always_load
     ));
@@ -505,6 +506,17 @@ fn non_yolo_mode_retains_default_defer_policy() {
         AppMode::Agent,
         &always_load
     ));
+    // #2654: read-only git history joins the active set.
+    assert!(!should_default_defer_tool(
+        "git_log",
+        AppMode::Agent,
+        &always_load
+    ));
+    assert!(!should_default_defer_tool(
+        "git_show",
+        AppMode::Agent,
+        &always_load
+    ));
     assert!(!should_default_defer_tool(
         "git_status",
         AppMode::Agent,
@@ -517,6 +529,19 @@ fn non_yolo_mode_retains_default_defer_policy() {
     ));
     assert!(!should_default_defer_tool(
         "agent_open",
+        AppMode::Agent,
+        &always_load
+    ));
+    // #2605: the fetch/close side of the sub-agent surface must also stay
+    // active so a first `agent_eval`/`agent_close` executes instead of
+    // hydrating its schema and forcing a double-invoke.
+    assert!(!should_default_defer_tool(
+        "agent_eval",
+        AppMode::Agent,
+        &always_load
+    ));
+    assert!(!should_default_defer_tool(
+        "agent_close",
         AppMode::Agent,
         &always_load
     ));
@@ -546,7 +571,7 @@ fn non_yolo_mode_retains_default_defer_policy() {
         &always_load
     ));
     assert!(should_default_defer_tool(
-        "git_show",
+        "git_blame",
         AppMode::Agent,
         &always_load
     ));
@@ -582,6 +607,105 @@ fn model_tool_catalog_applies_native_and_mcp_deferral() {
     assert_eq!(defer_loading("project_map"), Some(true));
     assert_eq!(defer_loading("list_mcp_resources"), Some(false));
     assert_eq!(defer_loading("mcp_server_write"), Some(true));
+}
+
+#[test]
+fn arcee_provider_policy_defers_risky_tools_keeps_read_only_and_tool_search() {
+    let always_load = HashSet::new();
+    let mut catalog = vec![
+        api_tool("read_file"),
+        api_tool("list_dir"),
+        api_tool("git_status"),
+        api_tool("git_diff"),
+        api_tool("grep_files"),
+        api_tool("file_search"),
+        api_tool("update_plan"),
+        api_tool("checklist_write"),
+        api_tool("exec_shell"),
+        api_tool("apply_patch"),
+        api_tool("write_file"),
+        api_tool("edit_file"),
+        api_tool("fetch_url"),
+        api_tool("web_search"),
+        api_tool("tool_search_tool_regex"),
+        api_tool("tool_search_tool_bm25"),
+    ];
+
+    apply_provider_tool_policy(&mut catalog, ApiProvider::Arcee, &always_load);
+
+    let defer = |name: &str| {
+        catalog
+            .iter()
+            .find(|tool| tool.name == name)
+            .and_then(|tool| tool.defer_loading)
+    };
+
+    // Benign read-only first-turn set stays active so the opening Arcee
+    // request clears Cloudflare's WAF.
+    for active in [
+        "read_file",
+        "list_dir",
+        "git_status",
+        "git_diff",
+        "grep_files",
+        "file_search",
+        "update_plan",
+        "checklist_write",
+    ] {
+        assert_eq!(defer(active), Some(false), "{active} should stay active");
+    }
+    // Tool-search stays active so the deferred tail remains discoverable.
+    assert_eq!(defer("tool_search_tool_regex"), Some(false));
+    assert_eq!(defer("tool_search_tool_bm25"), Some(false));
+    // WAF-risky / mutating tools are deferred on the first Arcee turn.
+    for deferred in [
+        "exec_shell",
+        "apply_patch",
+        "write_file",
+        "edit_file",
+        "fetch_url",
+        "web_search",
+    ] {
+        assert_eq!(defer(deferred), Some(true), "{deferred} should be deferred");
+    }
+
+    let active = initial_active_tools(&catalog);
+    assert!(active.contains("read_file"));
+    assert!(active.contains("tool_search_tool_regex"));
+    assert!(!active.contains("exec_shell"));
+    assert!(!active.contains("apply_patch"));
+}
+
+#[test]
+fn provider_tool_policy_is_noop_for_non_waf_providers() {
+    let always_load = HashSet::new();
+    let mut catalog = vec![api_tool("exec_shell"), api_tool("read_file")];
+
+    // DeepSeek has no reduced first-turn surface: the policy must leave the
+    // default deferral flags untouched (here: still unset).
+    apply_provider_tool_policy(&mut catalog, ApiProvider::Deepseek, &always_load);
+
+    assert!(catalog.iter().all(|tool| tool.defer_loading.is_none()));
+}
+
+#[test]
+fn arcee_provider_policy_honors_always_load_override() {
+    let mut always_load = HashSet::new();
+    always_load.insert("exec_shell".to_string());
+    let mut catalog = vec![api_tool("exec_shell"), api_tool("apply_patch")];
+
+    apply_provider_tool_policy(&mut catalog, ApiProvider::Arcee, &always_load);
+
+    let defer = |name: &str| {
+        catalog
+            .iter()
+            .find(|tool| tool.name == name)
+            .and_then(|tool| tool.defer_loading)
+    };
+    // A user-pinned always_load tool stays active even on Arcee.
+    assert_eq!(defer("exec_shell"), Some(false));
+    // Other risky tools remain deferred.
+    assert_eq!(defer("apply_patch"), Some(true));
 }
 
 #[test]
@@ -650,9 +774,9 @@ fn agent_catalog_keeps_edit_file_loaded_when_fuzz_is_omitted() {
 
 #[test]
 fn tools_always_load_overrides_default_native_deferral() {
-    let always_load = HashSet::from(["git_show".to_string()]);
+    let always_load = HashSet::from(["git_blame".to_string()]);
     assert!(!should_default_defer_tool(
-        "git_show",
+        "git_blame",
         AppMode::Agent,
         &always_load
     ));
@@ -684,7 +808,6 @@ fn print_agent_tool_catalog_metrics() {
         .with_plan_tool(new_shared_plan_state())
         .with_review_tool(None, DEFAULT_TEXT_MODEL.to_string())
         .with_rlm_tool(None, DEFAULT_TEXT_MODEL.to_string())
-        .with_recall_archive_tool()
         .with_notify_tool()
         .with_subagent_tools(manager, runtime)
         .build(context);
@@ -924,6 +1047,68 @@ fn deferred_tool_preflight_loads_edit_schema_without_executing_bad_aliases() {
     assert!(result.content.contains("replace: string required"));
     assert!(result.content.contains("old_string -> search"));
     assert!(result.content.contains("new_string -> replace"));
+    assert_eq!(
+        result.metadata.as_ref().unwrap()["deferred_tool_loaded"],
+        json!(true)
+    );
+}
+
+#[test]
+fn deferred_tool_preflight_guides_rlm_open_misnamed_source_fields() {
+    let (engine, _handle) = Engine::new(EngineConfig::default(), &Config::default());
+    let registry = engine
+        .build_turn_tool_registry_builder(
+            AppMode::Agent,
+            engine.config.todos.clone(),
+            engine.config.plan_state.clone(),
+        )
+        .build(engine.build_tool_context(AppMode::Agent, false));
+    let always_load = HashSet::new();
+    let mut catalog = build_model_tool_catalog(
+        registry.to_api_tools_with_cache(true),
+        vec![],
+        AppMode::Agent,
+        &always_load,
+    );
+    catalog
+        .iter_mut()
+        .find(|tool| tool.name == "rlm_open")
+        .expect("rlm_open registered")
+        .defer_loading = Some(true);
+    let mut active = initial_active_tools(&catalog);
+    assert!(!active.contains("rlm_open"));
+
+    let result = preflight_requested_deferred_tool(
+        "rlm_open",
+        &json!({
+            "name": "active_prompt",
+            "prompt": "inspect this",
+            "path": "src/lib.rs"
+        }),
+        &catalog,
+        &mut active,
+    )
+    .expect("deferred rlm_open should preflight");
+
+    assert!(active.contains("rlm_open"));
+    assert!(result.success);
+    assert!(result.content.contains("Tool `rlm_open` was deferred"));
+    assert!(result.content.contains("The tool was not executed"));
+    assert!(result.content.contains("session_object: string"));
+    assert!(
+        result.content.contains(
+            "prompt -> file_path (local file), content (inline text), url, or session_object"
+        ),
+        "prompt correction includes session_object: {}",
+        result.content
+    );
+    assert!(
+        result.content.contains(
+            "path -> file_path (local file), content (inline text), url, or session_object"
+        ),
+        "path correction includes session_object: {}",
+        result.content
+    );
     assert_eq!(
         result.metadata.as_ref().unwrap()["deferred_tool_loaded"],
         json!(true)
@@ -1172,8 +1357,6 @@ fn turn_tool_registry_builder_keeps_plan_mode_read_only_for_files() {
     assert!(registry.contains("task_list"));
     assert!(registry.contains("task_read"));
     assert!(registry.contains("handle_read"));
-    assert!(registry.contains("recall_archive"));
-
     let plan_state_tools = [
         "checklist_add",
         "checklist_update",
@@ -1330,26 +1513,6 @@ fn plan_mode_toggle_preserves_catalog_byte_stability() {
         Some(&"deferred_search"),
         "deferred tool must be appended at the tail"
     );
-}
-
-#[test]
-fn parent_turn_registry_includes_recall_archive_for_investigative_modes() {
-    let (engine, _handle) = Engine::new(EngineConfig::default(), &Config::default());
-
-    for mode in [AppMode::Plan, AppMode::Agent, AppMode::Yolo] {
-        let registry = engine
-            .build_turn_tool_registry_builder(
-                mode,
-                engine.config.todos.clone(),
-                engine.config.plan_state.clone(),
-            )
-            .build(engine.build_tool_context(mode, false));
-
-        assert!(
-            registry.contains("recall_archive"),
-            "parent {mode:?} registry should expose recall_archive"
-        );
-    }
 }
 
 #[test]
@@ -1615,6 +1778,61 @@ async fn change_mode_refreshes_session_prompt_and_updates_session() {
 
     assert!(prompt.contains("Mode: YOLO"));
     assert!(prompt.contains("Approval Policy: Auto"));
+}
+
+#[tokio::test]
+async fn change_mode_op_injects_runtime_event_into_session_messages() {
+    let tmp = tempdir().expect("tempdir");
+    let config = EngineConfig {
+        workspace: tmp.path().to_path_buf(),
+        model: "deepseek-v4-pro".to_string(),
+        ..Default::default()
+    };
+    let (engine, handle) = Engine::new(config, &Config::default());
+
+    let run = tokio::spawn(engine.run());
+    // Switch from default Agent → YOLO
+    handle
+        .send(Op::ChangeMode {
+            mode: AppMode::Yolo,
+        })
+        .await
+        .expect("send change mode");
+
+    // Collect session-updated events until we see the injected message
+    let messages = {
+        let mut rx = handle.rx_event.write().await;
+        loop {
+            let event = tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv())
+                .await
+                .expect("session update after mode switch")
+                .expect("event");
+            if let Event::SessionUpdated { messages, .. } = event {
+                // The last message should be our runtime event
+                if let Some(last) = messages.last()
+                    && let ContentBlock::Text { text, .. } =
+                        last.content.first().expect("text block")
+                    && text.contains("kind=\"mode_change\"")
+                {
+                    break messages;
+                }
+            }
+        }
+    };
+    run.abort();
+
+    let last = messages.last().expect("at least one message");
+    let ContentBlock::Text { text, .. } = last.content.first().expect("text block") else {
+        panic!("expected text block");
+    };
+    assert!(
+        text.contains("Agent mode") && text.contains("YOLO mode"),
+        "should contain both previous and new mode: {text}"
+    );
+    assert!(
+        text.contains("Re-evaluate"),
+        "should tell agent to re-evaluate: {text}"
+    );
 }
 
 #[test]
@@ -2042,6 +2260,7 @@ fn turn_metadata_includes_auto_model_route() {
 
     let user_msg = engine.user_text_message_with_turn_metadata_for_route(
         "debug this regression".to_string(),
+        AppMode::Agent,
         "deepseek-v4-pro",
         true,
         Some("max"),
@@ -2056,6 +2275,94 @@ fn turn_metadata_includes_auto_model_route() {
     assert!(text.contains("Auto model route: deepseek-v4-pro"));
     assert!(text.contains("Auto reasoning effort: max"));
     assert!(!text.contains("debug this regression"));
+}
+
+#[test]
+fn turn_metadata_includes_current_mode() {
+    let tmp = tempdir().expect("tempdir");
+    let config = EngineConfig {
+        workspace: tmp.path().to_path_buf(),
+        ..Default::default()
+    };
+    let (engine, _handle) = Engine::new(config, &Config::default());
+
+    let user_msg = engine.user_text_message_with_turn_metadata_for_route(
+        "test mode metadata".to_string(),
+        AppMode::Yolo,
+        "deepseek-v4-flash",
+        false,
+        None,
+        false,
+    );
+    let first_block = user_msg.content.first().expect("turn metadata block");
+    let ContentBlock::Text { text, .. } = first_block else {
+        panic!("expected text metadata block");
+    };
+
+    assert!(
+        text.contains("Current mode: YOLO mode - full tool access without approvals"),
+        "turn metadata should include the current mode label, got: {text}"
+    );
+}
+
+#[test]
+fn turn_metadata_mode_updates_with_change_mode_op() {
+    let tmp = tempdir().expect("tempdir");
+    let config = EngineConfig {
+        workspace: tmp.path().to_path_buf(),
+        ..Default::default()
+    };
+    let (mut engine, _handle) = Engine::new(config, &Config::default());
+
+    // In agent mode by default
+    let msg = engine.user_text_message_with_turn_metadata("hello".to_string());
+    let first_block = msg.content.first().expect("turn metadata block");
+    let ContentBlock::Text { text, .. } = first_block else {
+        panic!("expected text metadata block");
+    };
+    assert!(
+        text.contains("Agent mode"),
+        "initial mode should be Agent, got: {text}"
+    );
+
+    // Switch to YOLO — user_text_message_with_turn_metadata should reflect the new mode
+    engine.current_mode = AppMode::Yolo;
+    let msg = engine.user_text_message_with_turn_metadata("hello again".to_string());
+    let first_block = msg.content.first().expect("turn metadata block");
+    let ContentBlock::Text { text, .. } = first_block else {
+        panic!("expected text metadata block");
+    };
+    assert!(
+        text.contains("YOLO mode"),
+        "mode after change should be YOLO, got: {text}"
+    );
+}
+
+#[test]
+fn mode_change_runtime_message_format() {
+    let msg = Engine::mode_change_runtime_message(AppMode::Agent, AppMode::Yolo);
+
+    assert_eq!(msg.role, "user");
+    let ContentBlock::Text { text, .. } = msg.content.first().expect("text block") else {
+        panic!("expected text block");
+    };
+
+    assert!(
+        text.contains("codewhale:runtime_event"),
+        "should be a runtime event message"
+    );
+    assert!(
+        text.contains("kind=\"mode_change\""),
+        "should have mode_change kind"
+    );
+    assert!(
+        text.contains("Agent mode") && text.contains("YOLO mode"),
+        "should mention both previous and new mode: {text}"
+    );
+    assert!(
+        text.contains("Re-evaluate"),
+        "should tell agent to re-evaluate blocked operations: {text}"
+    );
 }
 
 #[test]
@@ -2939,9 +3246,17 @@ fn missing_shell_tool_error_message_names_allow_shell_gate() {
         assert!(message.contains("not available in the current tool catalog"));
         assert!(message.contains("allow_shell"), "{tool_name}: {message}");
         assert!(
-            message.contains("trusted workspaces"),
+            message.contains("/config allow_shell true"),
             "{tool_name}: {message}"
         );
+        assert!(message.contains("--save"), "{tool_name}: {message}");
+        assert!(message.contains("Agent mode"), "{tool_name}: {message}");
+        assert!(
+            message.contains("approval gating"),
+            "{tool_name}: {message}"
+        );
+        assert!(!message.contains("YOLO"), "{tool_name}: {message}");
+        assert!(!message.contains("auto-approve"), "{tool_name}: {message}");
         assert!(
             message.contains(TOOL_SEARCH_BM25_NAME),
             "{tool_name}: {message}"
@@ -2958,7 +3273,11 @@ fn missing_shell_tool_error_message_keeps_allow_shell_hint_with_suggestions() {
     assert!(message.contains("Did you mean:"));
     assert!(message.contains("exec"));
     assert!(message.contains("allow_shell"));
-    assert!(message.contains("trusted workspaces"));
+    assert!(message.contains("/config allow_shell true"));
+    assert!(message.contains("--save"));
+    assert!(message.contains("Agent mode"));
+    assert!(!message.contains("YOLO"));
+    assert!(!message.contains("auto-approve"));
     assert!(message.contains(TOOL_SEARCH_BM25_NAME));
 }
 
