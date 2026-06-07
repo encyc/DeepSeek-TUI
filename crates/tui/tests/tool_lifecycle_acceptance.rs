@@ -45,7 +45,12 @@ fn offline_codewhale_workspace_containing(world: &mut ToolLifecycleWorld, step: 
         let kind = row_value(&row, "kind");
         let path = workspace.path().join(relative_path);
         match kind.as_str() {
-            "file" => std::fs::write(&path, "").expect("write workspace file"),
+            "file" => {
+                if let Some(parent) = path.parent() {
+                    std::fs::create_dir_all(parent).expect("create workspace file parent");
+                }
+                std::fs::write(&path, "").expect("write workspace file");
+            }
             "folder" => std::fs::create_dir_all(&path).expect("create workspace folder"),
             other => panic!("unsupported workspace entry kind: {other}"),
         }
@@ -328,35 +333,52 @@ fn run_codewhale_exec(
 
 fn run_with_timeout(mut command: Command, timeout: Duration) -> std::process::Output {
     let mut child = command.spawn().expect("spawn codewhale-tui exec");
+    let stdout_reader = read_pipe_in_background(child.stdout.take().expect("stdout pipe"));
+    let stderr_reader = read_pipe_in_background(child.stderr.take().expect("stderr pipe"));
+
     let status = match child.wait_timeout(timeout).expect("wait for codewhale-tui") {
         Some(status) => status,
         None => {
             let _ = child.kill();
             let _ = child.wait();
-            panic!("codewhale-tui exec timed out after {timeout:?}");
+            let stdout = join_pipe_reader(stdout_reader, "stdout");
+            let stderr = join_pipe_reader(stderr_reader, "stderr");
+            panic!(
+                "codewhale-tui exec timed out after {timeout:?}\nstdout:\n{}\nstderr:\n{}",
+                String::from_utf8_lossy(&stdout),
+                String::from_utf8_lossy(&stderr)
+            );
         }
     };
 
-    let mut stdout = Vec::new();
-    let mut stderr = Vec::new();
-    child
-        .stdout
-        .take()
-        .expect("stdout pipe")
-        .read_to_end(&mut stdout)
-        .expect("read stdout");
-    child
-        .stderr
-        .take()
-        .expect("stderr pipe")
-        .read_to_end(&mut stderr)
-        .expect("read stderr");
+    let stdout = join_pipe_reader(stdout_reader, "stdout");
+    let stderr = join_pipe_reader(stderr_reader, "stderr");
 
     std::process::Output {
         status,
         stdout,
         stderr,
     }
+}
+
+fn read_pipe_in_background<R>(mut reader: R) -> std::thread::JoinHandle<std::io::Result<Vec<u8>>>
+where
+    R: Read + Send + 'static,
+{
+    std::thread::spawn(move || {
+        let mut output = Vec::new();
+        reader.read_to_end(&mut output).map(|_| output)
+    })
+}
+
+fn join_pipe_reader(
+    handle: std::thread::JoinHandle<std::io::Result<Vec<u8>>>,
+    stream_name: &str,
+) -> Vec<u8> {
+    handle
+        .join()
+        .unwrap_or_else(|_| panic!("{stream_name} reader thread panicked"))
+        .unwrap_or_else(|err| panic!("read {stream_name}: {err}"))
 }
 
 fn preserve_host_env(command: &mut Command) {
@@ -370,6 +392,10 @@ fn preserve_host_env(command: &mut Command) {
         "COMSPEC",
         "TEMP",
         "TMP",
+        "TERM",
+        "COLORTERM",
+        "LANG",
+        "LC_ALL",
     ] {
         if let Some(value) = std::env::var_os(key) {
             command.env(key, value);
